@@ -20,6 +20,8 @@ SITE_PRESETS = {
     # Mintlify-hosted sites
     "mintlify.app": "aside",
     "explore.airia.com": "aside",
+    # Material for MkDocs
+    "airiallc.github.io": ".md-nav--primary",
 }
 
 DEFAULT_SELECTOR = "div.sphinxsidebar"
@@ -32,6 +34,8 @@ CONTENT_SELECTORS = [
     "div[itemprop='articleBody']",
     "div.body",
     ".prose",           # Mintlify
+    ".md-content__inner",  # Material for MkDocs
+    ".md-typeset",         # Material for MkDocs (fallback)
     "article",
     "section",
     "main",
@@ -174,10 +178,15 @@ def get_dynamic_links(page, start_url, sidebar_selector):
             print(f"   🔄 Redirected to: {actual_url}")
 
         clean_actual = actual_url.split('?')[0].split('#')[0]
-        if is_mintlify(start_url):
-            # Mintlify sidebar links are siblings under the parent path, not children of the start URL.
-            # e.g. start=/airia-chat/airia-chat → prefix=https://host/airia-chat
-            parsed = urlparse(clean_actual)
+        parsed = urlparse(clean_actual)
+        path_parts = [p for p in parsed.path.split('/') if p]
+
+        if 'github.io' in parsed.netloc:
+            # GitHub Pages: site root is scheme://netloc/repo-name
+            root_path = '/' + path_parts[0] if path_parts else ''
+            base_prefix = f"{parsed.scheme}://{parsed.netloc}{root_path}"
+        elif is_mintlify(start_url):
+            # Mintlify sidebar links are siblings, one level up from start URL
             parent_path = '/'.join(parsed.path.rstrip('/').split('/')[:-1])
             base_prefix = f"{parsed.scheme}://{parsed.netloc}{parent_path}"
         else:
