@@ -11,12 +11,15 @@ from playwright.sync_api import sync_playwright
 
 # --- CONFIGURATION & PRESETS ---
 SITE_PRESETS = {
-    "flask.palletsprojects.com": "div.sphinxsidebar", 
+    "flask.palletsprojects.com": "div.sphinxsidebar",
     "react.dev": "nav[aria-label='Main']",
     "playwright.dev": ".menu__list",
     "docs.python.org": "div.sphinxsidebar",
     "readthedocs.io": "div.sphinxsidebar",
     "django": "#docs-content",
+    # Mintlify-hosted sites
+    "mintlify.app": "aside",
+    "explore.airia.com": "aside",
 }
 
 DEFAULT_SELECTOR = "div.sphinxsidebar"
@@ -28,12 +31,15 @@ CONTENT_SELECTORS = [
     "div.document",
     "div[itemprop='articleBody']",
     "div.body",
+    ".prose",           # Mintlify
+    "article",
     "section",
     "main",
-    "article",
     ".markdown-section",
     ".theme-doc-markdown"
 ]
+
+MINTLIFY_DOMAINS = ["mintlify.app", "explore.airia.com"]
 
 CSS_STYLES = """
     @page { 
@@ -150,28 +156,54 @@ def detect_selector(url, user_selector):
     return DEFAULT_SELECTOR
 
 # --- SPIDER ---
+def is_mintlify(url):
+    return any(domain in url for domain in MINTLIFY_DOMAINS)
+
 def get_dynamic_links(page, start_url, sidebar_selector):
     print(f"🕷️  Spider: Navigating to {start_url}")
     try:
         page.goto(start_url, timeout=60000)
-        page.wait_for_load_state("domcontentloaded")
-        
+        # Mintlify/Next.js sites need full network idle to hydrate nav
+        if is_mintlify(start_url):
+            page.wait_for_load_state("networkidle", timeout=30000)
+        else:
+            page.wait_for_load_state("domcontentloaded")
+
         actual_url = page.url
         if actual_url != start_url:
             print(f"   🔄 Redirected to: {actual_url}")
-        
-        base_prefix = actual_url.split('?')[0].split('#')[0]
+
+        clean_actual = actual_url.split('?')[0].split('#')[0]
+        if is_mintlify(start_url):
+            # Mintlify sidebar links are siblings under the parent path, not children of the start URL.
+            # e.g. start=/airia-chat/airia-chat → prefix=https://host/airia-chat
+            parsed = urlparse(clean_actual)
+            parent_path = '/'.join(parsed.path.rstrip('/').split('/')[:-1])
+            base_prefix = f"{parsed.scheme}://{parsed.netloc}{parent_path}"
+        else:
+            base_prefix = clean_actual
         if base_prefix.endswith('/'): base_prefix = base_prefix[:-1]
+        print(f"   📌 Base prefix: {base_prefix}")
 
         print("   🔓 Attempting to expand sidebar menus...")
         try:
-            page.evaluate(f"""() => {{
-                const sidebar = document.querySelector('{sidebar_selector}') || document.querySelector('aside') || document.querySelector('nav');
-                if (!sidebar) return;
-                const groups = sidebar.querySelectorAll('li[role="link"], .menu-item-type-group');
-                groups.forEach(group => {{ group.click(); }});
-            }}""")
-            page.wait_for_timeout(1000) 
+            if is_mintlify(start_url):
+                # Mintlify uses <button> elements to toggle collapsible nav groups
+                page.evaluate(f"""() => {{
+                    const sidebar = document.querySelector('{sidebar_selector}') || document.querySelector('aside');
+                    if (!sidebar) return;
+                    const buttons = sidebar.querySelectorAll('button');
+                    buttons.forEach(btn => {{ btn.click(); }});
+                }}""")
+                page.wait_for_timeout(1500)
+            else:
+                page.evaluate(f"""() => {{
+                    const sidebar = document.querySelector('{sidebar_selector}') || document.querySelector('aside') || document.querySelector('nav');
+                    if (!sidebar) return;
+                    const groups = sidebar.querySelectorAll('li[role="link"], .menu-item-type-group');
+                    groups.forEach(group => {{ group.click(); }});
+                }}""")
+                page.wait_for_timeout(1000)
         except Exception as e:
             print(f"   ⚠️ Expander warning: {e}")
 
@@ -226,10 +258,12 @@ def get_dynamic_links(page, start_url, sidebar_selector):
 def fetch_page_content(page, url, chapter_id, url_map):
     try:
         page.goto(url, timeout=60000)
-        page.wait_for_load_state("domcontentloaded")
-        
-        # Wait for API content to hydrate
-        page.wait_for_timeout(2000) 
+        if is_mintlify(url):
+            page.wait_for_load_state("networkidle", timeout=30000)
+        else:
+            page.wait_for_load_state("domcontentloaded")
+            # Wait for API content to hydrate
+            page.wait_for_timeout(2000)
 
         soup = BeautifulSoup(page.content(), "html.parser")
         
